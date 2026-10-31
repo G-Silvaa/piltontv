@@ -543,12 +543,18 @@
       return;
     }
     const q = quality();
+    const sup = navigator.mediaDevices.getSupportedConstraints ? navigator.mediaDevices.getSupportedConstraints() : {};
+    // Áudio de filme/jogo: sem cancelamento de eco nem filtro de ruído (isso é para voz)
+    const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+    // Tira do som capturado o áudio que sai do próprio piltonTv (a voz dos amigos).
+    // Sem isso, ao compartilhar a tela inteira com som, eles se ouvem de volta (retorno).
+    if (sup.restrictOwnAudio) audio.restrictOwnAudio = true;
+    if (sup.suppressLocalAudioPlayback) audio.suppressLocalAudioPlayback = false;
     let stream;
     try {
       stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: q.fps, max: 60 }, height: { ideal: 1080 } },
-        // Áudio de filme/jogo: sem cancelamento de eco nem filtro de ruído (isso é para voz)
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        video: { frameRate: { ideal: q.fps, max: 60 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        audio,
         systemAudio: 'include',      // no Windows deixa mandar o som do PC inteiro
         selfBrowserSurface: 'exclude',
         surfaceSwitching: 'include',
@@ -568,8 +574,17 @@
     broadcast(myState());
     renderControls();
     renderMembers();
-    if (stream.getAudioTracks().length === 0) {
-      toast('Compartilhando sem áudio. Para mandar o som, escolha uma aba do Chrome e marque "Compartilhar áudio".');
+    const surface = vt && vt.getSettings().displaySurface;
+    const hasAudio = stream.getAudioTracks().length > 0;
+    if (!hasAudio) {
+      toast('Compartilhando sem áudio. Para mandar o som, marque "Compartilhar áudio" na janela do navegador.');
+    } else if (surface === 'monitor' || surface === 'window') {
+      // O som do PC inteiro inclui outros apps de voz (Discord etc.), e isso o navegador não consegue separar.
+      toast(sup.restrictOwnAudio
+        ? 'Som do PC ligado. Use a voz do piltonTv: se estiver em call no Discord, seus amigos vão ouvir o Discord de volta.'
+        : 'Som do PC ligado: a voz da call pode voltar para os amigos. Para evitar, compartilhe uma aba ou use fone.');
+    } else if (surface === 'browser') {
+      toast('Dica: coloque o vídeo em tela cheia na aba compartilhada para a melhor qualidade.');
     }
   }
 
