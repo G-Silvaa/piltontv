@@ -65,9 +65,12 @@
     lastSeen: new Map(), // peerId -> última vez que chegou algo dele
     volumes: {},         // nome -> volume (0 a 2) que eu escolhi para essa pessoa
     volFor: null,        // peerId com o painel de volume aberto
+    screenVolumes: {},   // nome -> volume (0 a 2) da transmissão dessa pessoa
+    screenGains: new Map(), // peerId -> { src, gain, stream } quando a transmissão está acima de 100%
   };
   try { S.quality = localStorage.getItem('ptv-quality') || 'alta'; } catch {}
   try { S.volumes = JSON.parse(localStorage.getItem('ptv-volumes') || '{}') || {}; } catch {}
+  try { S.screenVolumes = JSON.parse(localStorage.getItem('ptv-screen-volumes') || '{}') || {}; } catch {}
   // O id da aba fica no sessionStorage só enquanto a página está fechando, para o recarregamento
   // reaproveitar. Se ficasse lá o tempo todo, "Duplicar guia" copiaria e as duas abas teriam o mesmo id.
   try { S.uid = sessionStorage.getItem('ptv-uid') || ''; sessionStorage.removeItem('ptv-uid'); } catch {}
@@ -405,7 +408,7 @@
       }
       const prevName = m.name;
       m.name = String(d.name || '?').slice(0, 24);
-      if (m.name !== prevName) applyVoiceVolume(id);
+      if (m.name !== prevName) { applyVoiceVolume(id); applyScreenVolume(id); }
       m.muted = !!d.muted;
       m.deaf = !!d.deaf;
       m.noMic = !!d.noMic;
@@ -813,7 +816,11 @@
         <video autoplay playsinline></video>
         <div class="tile-label"><span class="live-badge">AO VIVO</span><span class="tile-name"></span></div>
         <div class="tile-tools">
-          ${isMine ? '' : `<span title="Volume da transmissão" style="display:flex;color:#fff">${I.vol}</span><input type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume">`}
+          ${isMine ? '' : `
+          <span class="tile-nosound">sem som</span>
+          <button class="icon-btn" data-act="mute" title="Mutar transmissão" aria-label="Mutar transmissão">${I.vol}</button>
+          <input type="range" min="0" max="200" step="5" value="100" aria-label="Volume da transmissão">
+          <span class="tile-vol">100%</span>`}
           <button class="icon-btn" data-act="full" title="Tela cheia" aria-label="Tela cheia">${I.full}</button>
         </div>`;
       const video = tile.querySelector('video');
@@ -821,9 +828,29 @@
       if (isMine) video.dataset.mine = '1';
       const range = tile.querySelector('input[type=range]');
       if (range) {
-        range.addEventListener('click', (e) => e.stopPropagation());
-        range.addEventListener('input', () => { video.volume = Number(range.value); });
+        for (const ev of ['click', 'dblclick', 'pointerdown']) range.addEventListener(ev, (e) => e.stopPropagation());
+        range.addEventListener('input', () => setScreenVolume(id, Number(range.value) / 100));
+        const mute = tile.querySelector('[data-act=mute]');
+        mute.addEventListener('dblclick', (e) => e.stopPropagation());
+        mute.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const cur = screenVolume(id);
+          if (cur > 0) { tile.dataset.lastVol = cur; setScreenVolume(id, 0); }
+          else setScreenVolume(id, Number(tile.dataset.lastVol) || 1);
+        });
       }
+      // Controles aparecem ao mexer o mouse e somem sozinhos (também em tela cheia).
+      const showTools = (ms = 2500) => {
+        tile.classList.add('show-tools');
+        clearTimeout(tile._toolsTimer);
+        tile._toolsTimer = setTimeout(() => {
+          if (!tile.querySelector('.tile-tools:hover, .tile-tools:focus-within')) tile.classList.remove('show-tools');
+          else showTools(ms);
+        }, ms);
+      };
+      tile.addEventListener('pointermove', () => showTools());
+      tile.addEventListener('pointerleave', () => { clearTimeout(tile._toolsTimer); tile.classList.remove('show-tools'); });
+      showTools(5000); // ao aparecer, mostra por uns segundos para todo mundo saber que existe
       tile.querySelector('[data-act=full]').addEventListener('click', (e) => {
         e.stopPropagation();
         const fn = tile.requestFullscreen || tile.webkitRequestFullscreen;
@@ -838,13 +865,76 @@
     const video = tile.querySelector('video');
     if (video.srcObject !== stream) video.srcObject = stream;
     video.play().catch(() => {});
+    if (!isMine) applyScreenVolume(id);
     updateTileLabel(id);
     layoutTiles();
   }
 
+  // Volume da transmissão de cada pessoa. Mesma ideia da voz: até 100% no próprio <video>,
+  // acima disso por um ganho do Web Audio (com o <video> mudo para não tocar dobrado).
+  function screenVolume(id) {
+    const m = S.members.get(id);
+    const v = m && S.screenVolumes[m.name];
+    return typeof v === 'number' && v >= 0 && v <= 2 ? v : 1;
+  }
+
+  function dropScreenGain(id) {
+    const g = S.screenGains.get(id);
+    if (!g) return;
+    try { g.src.disconnect(); g.gain.disconnect(); } catch {}
+    S.screenGains.delete(id);
+  }
+
+  function applyScreenVolume(id) {
+    const tile = document.getElementById('t-' + id);
+    if (!tile || id === S.myId) return;
+    const video = tile.querySelector('video');
+    const stream = video.srcObject;
+    const hasAudio = !!(stream && stream.getAudioTracks().length);
+    const vol = screenVolume(id);
+    const boost = vol > 1 && hasAudio && !!S.audioCtx;
+    let g = S.screenGains.get(id);
+    if (g && (!boost || g.stream !== stream)) { dropScreenGain(id); g = null; }
+    if (boost && !g) {
+      const src = S.audioCtx.createMediaStreamSource(stream);
+      const gain = S.audioCtx.createGain();
+      src.connect(gain).connect(S.audioCtx.destination);
+      g = { src, gain, stream };
+      S.screenGains.set(id, g);
+    }
+    if (g) g.gain.gain.value = S.deaf ? 0 : vol;
+    video.volume = boost ? 1 : vol;
+    video.muted = S.deaf || boost;
+
+    const pct = Math.round(vol * 100);
+    tile.classList.toggle('no-sound', !hasAudio);
+    const range = tile.querySelector('input[type=range]');
+    if (range && Number(range.value) !== pct) range.value = pct;
+    const label = tile.querySelector('.tile-vol');
+    if (label) label.textContent = pct + '%';
+    const mute = tile.querySelector('[data-act=mute]');
+    if (mute) {
+      mute.innerHTML = pct === 0 ? I.volOff : I.vol;
+      mute.title = pct === 0 ? 'Desmutar transmissão' : 'Mutar transmissão';
+      mute.setAttribute('aria-label', mute.title);
+      mute.classList.toggle('off', pct === 0);
+    }
+  }
+
+  function setScreenVolume(id, vol) {
+    const m = S.members.get(id);
+    if (!m) return;
+    if (Math.abs(vol - 1) < 0.001) delete S.screenVolumes[m.name];
+    else S.screenVolumes[m.name] = vol;
+    try { localStorage.setItem('ptv-screen-volumes', JSON.stringify(S.screenVolumes)); } catch {}
+    applyScreenVolume(id);
+  }
+
   function removeTile(id) {
+    dropScreenGain(id);
     const tile = document.getElementById('t-' + id);
     if (!tile) return;
+    clearTimeout(tile._toolsTimer);
     const v = tile.querySelector('video');
     if (v) v.srcObject = null;
     tile.remove();
@@ -922,7 +1012,7 @@
     }
     if (S.mic) for (const t of S.mic.getAudioTracks()) t.enabled = !S.micMuted;
     for (const id of S.members.keys()) applyVoiceVolume(id);
-    for (const v of $('#tiles').querySelectorAll('.tile video')) if (!v.dataset.mine) v.muted = on;
+    for (const t of $('#tiles').querySelectorAll('.tile')) applyScreenVolume(t.dataset.id);
     broadcast(myState());
     renderControls();
     renderMembers();

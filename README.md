@@ -6,6 +6,7 @@ Sala para os amigos assistirem a tela uns dos outros. Tem voz e chat, roda diret
 - Sem banco de dados: o chat some quando todo mundo sai.
 - Funciona bem para 4 a 9 pessoas.
 - Clique em alguém na lista para mudar o volume da voz dessa pessoa (0 a 200%). Só você ouve a diferença, e o ajuste fica salvo pelo apelido.
+- Cada transmissão tem o próprio volume (0 a 200%) e um botão de mutar: é só mexer o mouse em cima do vídeo.
 
 ## Qualidade da transmissão
 
