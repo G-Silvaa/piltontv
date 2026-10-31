@@ -5,6 +5,7 @@ Sala para os amigos assistirem a tela uns dos outros. Tem voz e chat, roda diret
 - Sem servidor próprio: a voz e a tela vão direto de um PC para o outro (WebRTC, via [PeerJS](https://peerjs.com)).
 - Sem banco de dados: o chat some quando todo mundo sai.
 - Funciona bem para 4 a 9 pessoas.
+- Clique em alguém na lista para mudar o volume da voz dessa pessoa (0 a 200%). Só você ouve a diferença, e o ajuste fica salvo pelo apelido.
 
 ## Qualidade da transmissão
 

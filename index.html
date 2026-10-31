@@ -99,6 +99,18 @@
     </aside>
 
     <div id="audios" hidden></div>
+
+    <div id="volPop" class="vol-pop" role="dialog" aria-labelledby="volTitle" hidden>
+      <div class="vol-title" id="volTitle">Volume de <span id="volName"></span></div>
+      <div class="vol-row">
+        <input id="volRange" type="range" min="0" max="200" step="5" value="100" aria-labelledby="volTitle">
+        <span id="volValue" class="vol-value">100%</span>
+      </div>
+      <div class="vol-foot">
+        <span class="vol-note">Só você ouve a diferença.</span>
+        <button type="button" id="volReset" class="vol-reset">Voltar a 100%</button>
+      </div>
+    </div>
   </section>
 
   <div id="toasts" class="toasts" aria-live="polite"></div>

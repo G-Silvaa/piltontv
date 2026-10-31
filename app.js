@@ -13,6 +13,8 @@
 
   const PREFIX = 'piltontv';
   const SYNC_MS = 9000;
+  const PING_MS = 4000;     // cada um avisa "ainda estou aqui" a cada 4s
+  const STALE_MS = 20000;   // sem notícia por 20s = saiu (aba fechada, internet caiu...)
 
   const $ = (s) => document.querySelector(s);
 
@@ -31,6 +33,7 @@
     people: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M17 4a4 4 0 0 1 0 8M22 21a7 7 0 0 0-4-6.3"/></svg>',
     full: '<svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>',
     vol: '<svg viewBox="0 0 24 24"><path d="M11 5L6 9H2v6h4l5 4zM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg>',
+    volOff: '<svg viewBox="0 0 24 24"><path d="M11 5L6 9H2v6h4l5 4zM22 9l-6 6M16 9l6 6"/></svg>',
   };
 
   // ---------- Estado ----------
@@ -58,8 +61,18 @@
     lastMsgFrom: null,
     joinedAt: 0,
     quality: 'alta',
+    uid: '',             // id desta aba; sobrevive a recarregar a página
+    lastSeen: new Map(), // peerId -> última vez que chegou algo dele
+    volumes: {},         // nome -> volume (0 a 2) que eu escolhi para essa pessoa
+    volFor: null,        // peerId com o painel de volume aberto
   };
   try { S.quality = localStorage.getItem('ptv-quality') || 'alta'; } catch {}
+  try { S.volumes = JSON.parse(localStorage.getItem('ptv-volumes') || '{}') || {}; } catch {}
+  // O id da aba fica no sessionStorage só enquanto a página está fechando, para o recarregamento
+  // reaproveitar. Se ficasse lá o tempo todo, "Duplicar guia" copiaria e as duas abas teriam o mesmo id.
+  try { S.uid = sessionStorage.getItem('ptv-uid') || ''; sessionStorage.removeItem('ptv-uid'); } catch {}
+  if (!S.uid) S.uid = Math.random().toString(36).slice(2, 12);
+  window.addEventListener('pagehide', () => { try { sessionStorage.setItem('ptv-uid', S.uid); } catch {} });
 
   // Logo depois de entrar, quem já estava na sala não deve gerar "fulano entrou" nem som.
   const settling = () => Date.now() - S.joinedAt < 4000;
@@ -263,7 +276,7 @@
   function onLobbyConn(conn) {
     conn.on('open', () => {
       const ids = [S.myId];
-      for (const [id, c] of S.conns) if (c.open) ids.push(id);
+      for (const [id, c] of S.conns) if (c.open && !isStale(id)) ids.push(id);
       conn.send({ type: 'members', ids });
       setTimeout(() => { try { conn.close(); } catch {} }, 2000);
     });
@@ -278,7 +291,7 @@
   function adoptConn(conn, outgoing) {
     const id = conn.peer;
     conn._initiator = outgoing ? S.myId : id;
-    conn.on('data', (d) => onData(id, d));
+    conn.on('data', (d) => { if (S.conns.get(id) === conn) S.lastSeen.set(id, Date.now()); onData(id, d); });
 
     const existing = S.conns.get(id);
     if (existing && existing !== conn) {
@@ -307,12 +320,14 @@
       deaf: S.deaf,
       sharing: !!S.screen,
       noMic: !S.mic,
+      uid: S.uid,
     };
   }
 
   function onConnOpen(conn) {
     const id = conn.peer;
     if (S.conns.get(id) !== conn) return;
+    S.lastSeen.set(id, Date.now());
     conn.send(myState());
     if (!S.members.has(id)) {
       // O nome real chega na primeira mensagem de 'state'.
@@ -329,13 +344,33 @@
     const id = conn.peer;
     if (S.conns.get(id) !== conn) return;
     S.conns.delete(id);
+    S.lastSeen.delete(id);
     removeMember(id);
   }
 
-  function removeMember(id) {
+  // Tira alguém da sala na hora, sem esperar o navegador perceber que a conexão caiu.
+  function dropPeer(id, quiet = false) {
+    const conn = S.conns.get(id);
+    S.conns.delete(id);
+    S.lastSeen.delete(id);
+    if (conn) { try { conn.close(); } catch {} }
+    removeMember(id, quiet);
+  }
+
+  const isStale = (id) => Date.now() - (S.lastSeen.get(id) || 0) > STALE_MS;
+
+  // Batimento: avisa que estou aqui e derruba quem sumiu sem avisar.
+  setInterval(() => {
+    if (!S.joinedAt || S.leaving) return;
+    broadcast({ type: 'ping' });
+    for (const [id, c] of [...S.conns]) if (c.open && isStale(id)) dropPeer(id);
+  }, PING_MS);
+
+  function removeMember(id, quiet = false) {
     const m = S.members.get(id);
     if (!m) return;
     S.members.delete(id);
+    if (S.volFor === id) closeVolume();
     for (const kind of ['voice', 'screen']) {
       const key = `${kind}:${id}`;
       const out = S.outCalls.get(key);
@@ -345,8 +380,10 @@
     }
     detachVoice(id);
     removeTile(id);
-    beep(false);
-    systemMsg(`${m.name} saiu`);
+    if (!quiet) {
+      beep(false);
+      systemMsg(`${m.name} saiu`);
+    }
     renderMembers();
     applyScreenQuality();
   }
@@ -361,7 +398,14 @@
       const m = S.members.get(id);
       if (!m) return;
       const firstName = m.name === '...';
+      // A mesma aba voltou com outro id (recarregou a página): some com a entrada antiga.
+      if (typeof d.uid === 'string' && d.uid) {
+        m.uid = d.uid;
+        for (const [oid, om] of [...S.members]) if (oid !== id && om.uid === d.uid) dropPeer(oid, true);
+      }
+      const prevName = m.name;
       m.name = String(d.name || '?').slice(0, 24);
+      if (m.name !== prevName) applyVoiceVolume(id);
       m.muted = !!d.muted;
       m.deaf = !!d.deaf;
       m.noMic = !!d.noMic;
@@ -372,6 +416,8 @@
       if (!wasSharing && m.sharing && !firstName) toast(`${m.name} começou a compartilhar a tela`);
       renderMembers();
       updateTileLabel(id);
+    } else if (d.type === 'bye') {
+      dropPeer(id);
     } else if (d.type === 'chat') {
       const m = S.members.get(id);
       addMessage(m ? m.name : '?', String(d.text || '').slice(0, 500), id);
@@ -614,23 +660,123 @@
       $('#audios').appendChild(el);
     }
     if (el.srcObject !== stream) el.srcObject = stream;
-    el.muted = S.deaf;
     el.play().catch(() => {});
     watchLevel(id, stream);
+    applyVoiceVolume(id);
   }
 
   function detachVoice(id) {
     const el = document.getElementById('a-' + id);
     if (el) { el.srcObject = null; el.remove(); }
     const l = S.levels.get(id);
-    if (l) { try { l.src.disconnect(); } catch {} S.levels.delete(id); }
+    if (l) {
+      try { l.src.disconnect(); } catch {}
+      if (l.gain) { try { l.gain.disconnect(); } catch {} }
+      S.levels.delete(id);
+    }
+  }
+
+  // ---------- Volume de cada pessoa ----------
+  // Até 100% usa o próprio <audio>. Acima disso (para quem tem microfone baixo)
+  // o som passa por um ganho do Web Audio e o <audio> fica mudo para não tocar dobrado.
+  function voiceVolume(id) {
+    const m = S.members.get(id);
+    const v = m && S.volumes[m.name];
+    return typeof v === 'number' && v >= 0 && v <= 2 ? v : 1;
+  }
+
+  function applyVoiceVolume(id) {
+    const el = document.getElementById('a-' + id);
+    const l = S.levels.get(id);
+    const vol = voiceVolume(id);
+    const boost = vol > 1 && l && S.audioCtx;
+    if (boost) {
+      if (!l.gain) {
+        l.gain = S.audioCtx.createGain();
+        l.src.connect(l.gain).connect(S.audioCtx.destination);
+      }
+      l.gain.gain.value = S.deaf ? 0 : vol;
+    } else if (l && l.gain) {
+      try { l.gain.disconnect(); } catch {}
+      l.gain = null;
+    }
+    if (el) {
+      el.volume = boost ? 1 : vol;
+      el.muted = S.deaf || boost;
+    }
+  }
+
+  function setVoiceVolume(id, vol) {
+    const m = S.members.get(id);
+    if (!m) return;
+    if (Math.abs(vol - 1) < 0.001) delete S.volumes[m.name];
+    else S.volumes[m.name] = vol;
+    try { localStorage.setItem('ptv-volumes', JSON.stringify(S.volumes)); } catch {}
+    // Mesmo nome = mesma pessoa (ex.: entrou de dois aparelhos)
+    for (const [oid, om] of S.members) if (om.name === m.name) applyVoiceVolume(oid);
+  }
+
+  function openVolume(id, anchor) {
+    const m = S.members.get(id);
+    if (!m) return;
+    S.volFor = id;
+    const pop = $('#volPop');
+    const range = $('#volRange');
+    $('#volName').textContent = m.name;
+    range.value = Math.round(voiceVolume(id) * 100);
+    renderVolumeValue();
+    pop.hidden = false;
+    const r = anchor.getBoundingClientRect();
+    const w = pop.offsetWidth;
+    const h = pop.offsetHeight;
+    let left = r.right + 8;
+    if (left + w > window.innerWidth - 8) left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8));
+    let top = left === r.right + 8 ? r.top : r.bottom + 6;
+    top = Math.max(8, Math.min(top, window.innerHeight - h - 8));
+    pop.style.left = left + 'px';
+    pop.style.top = top + 'px';
+    range.focus();
+  }
+
+  function closeVolume() {
+    S.volFor = null;
+    $('#volPop').hidden = true;
+  }
+
+  function renderVolumeValue() {
+    const v = Number($('#volRange').value);
+    $('#volValue').textContent = v + '%';
+    $('#volReset').disabled = v === 100;
+  }
+
+  function initVolumePopover() {
+    const range = $('#volRange');
+    range.addEventListener('input', () => {
+      renderVolumeValue();
+      if (S.volFor) { setVoiceVolume(S.volFor, Number(range.value) / 100); renderMembers(); }
+    });
+    $('#volReset').addEventListener('click', () => {
+      range.value = 100;
+      range.dispatchEvent(new Event('input'));
+    });
+    document.addEventListener('pointerdown', (e) => {
+      if ($('#volPop').hidden) return;
+      if (e.target.closest('#volPop') || e.target.closest('.member[data-vol]')) return;
+      closeVolume();
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#volPop').hidden) closeVolume(); });
+    window.addEventListener('resize', closeVolume);
+    $('.side-section').addEventListener('scroll', closeVolume);
   }
 
   // Indicador de quem está falando (anel verde no avatar)
   function watchLevel(id, stream) {
     if (!S.audioCtx || !stream.getAudioTracks().length) return;
     const old = S.levels.get(id);
-    if (old) { try { old.src.disconnect(); } catch {} }
+    if (old) {
+      try { old.src.disconnect(); } catch {}
+      if (old.gain) { try { old.gain.disconnect(); } catch {} }
+    }
     const src = S.audioCtx.createMediaStreamSource(stream);
     const analyser = S.audioCtx.createAnalyser();
     analyser.fftSize = 512;
@@ -775,7 +921,7 @@
       S.micMuted = S.mutedBeforeDeaf;
     }
     if (S.mic) for (const t of S.mic.getAudioTracks()) t.enabled = !S.micMuted;
-    for (const a of $('#audios').querySelectorAll('audio')) a.muted = on;
+    for (const id of S.members.keys()) applyVoiceVolume(id);
     for (const v of $('#tiles').querySelectorAll('.tile video')) if (!v.dataset.mine) v.muted = on;
     broadcast(myState());
     renderControls();
@@ -821,6 +967,17 @@
       const li = document.createElement('li');
       li.className = 'member' + (isMe ? ' me' : '');
       li.dataset.id = id;
+      if (!isMe) {
+        li.dataset.vol = '1';
+        li.tabIndex = 0;
+        li.title = `Volume de ${m.name}`;
+        li.classList.toggle('vol-open', S.volFor === id);
+        const open = () => (S.volFor === id ? closeVolume() : openVolume(id, li));
+        li.addEventListener('click', () => { open(); renderMembers(); });
+        li.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); li.click(); }
+        });
+      }
       li.appendChild(avatar(m.name));
       const name = document.createElement('span');
       name.className = 'member-name';
@@ -829,6 +986,11 @@
       const icons = document.createElement('span');
       icons.className = 'member-icons';
       if (m.sharing) icons.insertAdjacentHTML('beforeend', '<span class="live-badge">AO VIVO</span>');
+      if (!isMe) {
+        const v = Math.round(voiceVolume(id) * 100);
+        if (v === 0) icons.insertAdjacentHTML('beforeend', `<span class="vol-badge off" title="Você zerou o volume">${I.volOff}</span>`);
+        else if (v !== 100) icons.insertAdjacentHTML('beforeend', `<span class="vol-badge" title="Volume que você escolheu">${v}%</span>`);
+      }
       if (m.deaf) icons.insertAdjacentHTML('beforeend', `<span title="Áudio silenciado">${I.headOff}</span>`);
       else if (m.muted) icons.insertAdjacentHTML('beforeend', `<span title="Mutado">${I.micOff}</span>`);
       li.appendChild(icons);
@@ -959,6 +1121,7 @@
     sel.value = QUALITY[S.quality] ? S.quality : 'alta';
     sel.addEventListener('change', () => setQualityPreset(sel.value));
 
+    initVolumePopover();
     renderControls();
     renderMembers();
     layoutTiles();
@@ -967,6 +1130,8 @@
   }
 
   function cleanup() {
+    if (S.leaving) return;
+    broadcast({ type: 'bye' }); // avisa na hora, em vez de deixarem a gente "fantasma" na lista
     S.leaving = true;
     if (S.screen) for (const t of S.screen.getTracks()) t.stop();
     if (S.mic) for (const t of S.mic.getTracks()) t.stop();
@@ -980,7 +1145,7 @@
   }
 
   window.addEventListener('pagehide', cleanup);
-  window.addEventListener('beforeunload', () => { if (!S.leaving) cleanup(); });
+  window.addEventListener('beforeunload', cleanup);
 
   // Para depuração no console: __ptv.state()
   window.__ptv = { state: () => S, isHub: () => S.isHub };
