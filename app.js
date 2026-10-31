@@ -556,6 +556,8 @@
         video: { frameRate: { ideal: q.fps, max: 60 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio,
         systemAudio: 'include',      // no Windows deixa mandar o som do PC inteiro
+        // Ao compartilhar uma janela, pede só o som dela (sem Discord etc.). Experimental: navegadores que não suportam ignoram.
+        windowAudio: 'window',
         selfBrowserSurface: 'exclude',
         surfaceSwitching: 'include',
       });
@@ -578,11 +580,13 @@
     const hasAudio = stream.getAudioTracks().length > 0;
     if (!hasAudio) {
       toast('Compartilhando sem áudio. Para mandar o som, marque "Compartilhar áudio" na janela do navegador.');
-    } else if (surface === 'monitor' || surface === 'window') {
+    } else if (surface === 'monitor') {
       // O som do PC inteiro inclui outros apps de voz (Discord etc.), e isso o navegador não consegue separar.
       toast(sup.restrictOwnAudio
         ? 'Som do PC ligado. Use a voz do piltonTv: se estiver em call no Discord, seus amigos vão ouvir o Discord de volta.'
-        : 'Som do PC ligado: a voz da call pode voltar para os amigos. Para evitar, compartilhe uma aba ou use fone.');
+        : 'Som do PC ligado: a voz da call pode voltar para os amigos. Para evitar, compartilhe uma guia ou use fone.');
+    } else if (surface === 'window') {
+      toast('Compartilhando janela com som. Se seus amigos ouvirem o Discord de volta, seu Chrome ainda não separa o som da janela: use uma guia.');
     } else if (surface === 'browser') {
       toast('Dica: coloque o vídeo em tela cheia na aba compartilhada para a melhor qualidade.');
     }
