@@ -32,6 +32,22 @@
     </form>
   </section>
 
+  <!-- Dentro do Discord: só um atalho para abrir no navegador -->
+  <section id="discord" class="join" hidden>
+    <div class="join-card">
+      <div class="brand">
+        <div class="brand-logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8"/></svg>
+        </div>
+        <h1>pilton<span>Tv</span></h1>
+      </div>
+      <p class="join-sub">A call e a tela rodam no navegador. O Discord não deixa elas funcionarem aqui dentro.</p>
+      <p class="discord-room" id="discordRoom">&nbsp;</p>
+      <button type="button" id="discordBtn" class="btn btn-primary btn-block" disabled>Conectando ao Discord...</button>
+      <p class="join-hint" id="discordStatus">&nbsp;</p>
+    </div>
+  </section>
+
   <!-- App -->
   <section id="app" class="app" hidden>
     <aside id="sidebar" class="sidebar">

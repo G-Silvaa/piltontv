@@ -1240,5 +1240,51 @@
   // Para depuração no console: __ptv.state()
   window.__ptv = { state: () => S, isHub: () => S.isHub };
 
-  initJoin();
+  // ---------- Dentro do Discord (Atividades) ----------
+  // O Discord não deixa usar WebRTC dentro das Atividades, então lá o piltonTv só mostra
+  // um botão que abre a sala no navegador. A sala sai do canal de voz: quem abrir a
+  // atividade no mesmo canal cai na mesma sala.
+  const SITE = 'https://piltontv.vercel.app/';
+  const inDiscord = location.hostname.endsWith('.discordsays.com') || new URLSearchParams(location.search).has('frame_id');
+
+  function initDiscord() {
+    $('#join').hidden = true;
+    $('#discord').hidden = false;
+    const btn = $('#discordBtn');
+    const status = $('#discordStatus');
+    const fail = (text) => { status.textContent = text; status.classList.add('error'); };
+
+    const s = document.createElement('script');
+    s.src = 'vendor/discord-sdk.min.js';
+    s.onerror = () => fail('Não foi possível carregar. Feche e abra a atividade de novo.');
+    s.onload = async () => {
+      let sdk;
+      try {
+        const clientId = new URLSearchParams(location.search).get('client_id') || location.hostname.split('.')[0];
+        sdk = new window.DiscordSDK(clientId);
+        await sdk.ready();
+      } catch (e) {
+        console.warn('discord sdk', e);
+        return fail('Não foi possível falar com o Discord. Feche e abra a atividade de novo.');
+      }
+      const room = sdk.channelId ? `discord-${sdk.channelId}` : 'principal';
+      const url = `${SITE}?sala=${encodeURIComponent(room)}`;
+      $('#discordRoom').textContent = sdk.channelId ? 'Sala deste canal de voz' : 'Sala principal';
+      btn.disabled = false;
+      btn.textContent = 'Abrir piltonTv no navegador';
+      status.textContent = 'O Discord vai perguntar se pode abrir o link. Marque "confiar neste domínio" para não perguntar de novo.';
+      btn.addEventListener('click', async () => {
+        try {
+          await sdk.commands.openExternalLink({ url });
+        } catch (e) {
+          console.warn('openExternalLink', e);
+          fail(`Não deu para abrir sozinho. Abra no navegador: ${url}`);
+        }
+      });
+    };
+    document.head.appendChild(s);
+  }
+
+  if (inDiscord) initDiscord();
+  else initJoin();
 })();

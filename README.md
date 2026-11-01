@@ -46,6 +46,20 @@ npx vercel        # primeira vez: faz login e cria o projeto
 npx vercel --prod
 ```
 
+## Abrir pelo Discord (Atividades)
+
+O Discord não deixa usar WebRTC dentro das Atividades. Então, aberto lá, o piltonTv mostra só um botão que abre a sala no navegador.
+A sala sai do canal de voz: todo mundo que abrir a atividade no mesmo canal cai na mesma sala.
+
+Para configurar (uma vez só):
+1. Em https://discord.com/developers/applications, clique em **New Application** e dê o nome `piltonTv`.
+2. Em **Activities → URL Mappings**, coloque `PREFIX` = `/` e `TARGET` = `piltontv.vercel.app`.
+3. Em **Activities → Settings**, ative **Enable Activities**.
+4. Em **Installation**, copie o link de instalação, abra no navegador e adicione o app no seu servidor.
+5. No Discord, entre num canal de voz, clique em **Atividades** e escolha o piltonTv.
+
+Não precisa colocar o Client ID no código: o site descobre sozinho pelo endereço em que o Discord o abre.
+
 ## Limitações
 
 - Compartilhar a tela só funciona no computador (Chrome, Edge ou Firefox). No celular dá para assistir.
